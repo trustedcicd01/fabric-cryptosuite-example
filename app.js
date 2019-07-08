@@ -177,6 +177,10 @@ class App {
         this.cryptoSuite = cryptoSuite;
 
         process.env.GOPATH = gopath;
+	console.log('user: ', user);
+	console.log('profile: ', profile);
+	console.log('org: ', org);
+	console.log('channel: ', channel);
     }
 
     async getClient() {
@@ -263,8 +267,8 @@ class App {
             args: [],
             txId: client.newTransactionID(true),
         };
-        const timeoutMS = 300000;
-        const responses = await channel.sendInstantiateProposal(instantiateRequest, timeoutMS);
+	const timeoutMS = 300000;
+	const responses = await channel.sendInstantiateProposal(instantiateRequest, timeoutMS);
         if (responses[0].filter(res => !res || res instanceof Error || !res.response || res.response.status !== 200).length > 0) {
             throw new Error(sprintf('Failed to instantiate chaincode: %j', results));
         }
@@ -278,6 +282,8 @@ class App {
         if (!(result && result.status === 'SUCCESS')) {
             throw new Error(sprintf('Failed to create a channel: %j', result));
         }
+	console.log(result)
+	return result
     }
 
     async register(username) {
@@ -296,6 +302,8 @@ class App {
         console.log('Done.\n');
         console.log('enrollmentID: ', username);
         console.log('enrollmentSecret: ', secret);
+
+	return secret;
     }
 
     async enroll(username, secret) {
@@ -304,12 +312,14 @@ class App {
         const client = await this.getClient();
         await client.setUserContext({ username: username, password: secret });
 
+	var message = 'Public and private keys are stored in crypto store. User state including certificate is stored in state store';
         console.log('Done.\n');
-        console.log('Public and private keys are stored in crypto store');
-        console.log('User state including certificate is stored in state store');
+        console.log(message);
+
+	return message
     }
 
-    async execute(fcn, args) {
+    async invoke(fcn, args) {
         console.log("Sending a signed transaction proposal with the certificate of %s...", this.user);
 
         const client = await this.getClient();
@@ -324,6 +334,7 @@ class App {
             args: args,
             txId: tx_id
         };
+	console.log(proposalRequest);
         const responses = await channel.sendTransactionProposal(proposalRequest);
         if (responses[0].filter(res => !res || res instanceof Error || !res.response || res.response.status !== 200).length > 0) {
             throw new Error(sprintf('Failed to call sendTransactionProposal: %j', responses[0]));
@@ -342,6 +353,12 @@ class App {
         console.log("Done.\n");
         console.log("Response status: ", responses[0][0].response.status);
         console.log("Response payload: %s", responses[0][0].response.payload);
+
+	var response = {
+	    status: responses[0][0].response.status,
+	    payload: responses[0][0].response.payload
+	};
+	return response;
     }
 
     async query(fcn, args) {
@@ -359,6 +376,7 @@ class App {
             args: args,
             txId: tx_id
         };
+	console.log(proposalRequest);
         const responses = await channel.sendTransactionProposal(proposalRequest);
         if (responses[0].filter(res => !res || res instanceof Error || !res.response || res.response.status !== 200).length > 0) {
             throw new Error(sprintf('Failed to call sendTransactionProposal: %j', responses[0]));
@@ -367,6 +385,12 @@ class App {
         console.log("Done.\n");
         console.log("Response status: ", responses[0][0].response.status);
         console.log("Response payload: %s", responses[0][0].response.payload);
+
+	var response = {
+	    status: responses[0][0].response.status,
+	    payload: responses[0][0].response.payload
+	};
+	return response;
     }
 }
 
@@ -384,6 +408,10 @@ function dispatch(methodName) {
     };
 }
 
+function sleep(msec) {
+    return new Promise(resolve => setTimeout(resolve, msec));
+}
+
 function main() {
     program
         .option('--user [name]', "User name", "admin")
@@ -393,17 +421,162 @@ function main() {
         .option('--peer [string]', "Peer name")
         .option('--orderer [string]', "Orderer name")
         .option('--ca-server [string]', "CA server name")
-        .option('--store-path [path]', "File store path", "./store")
+        .option('--store-path [path]', "File store path", "/data/store")
         .option('--crypto-suite [type]', "sw, pkcs11, or custom", "custom")
         .option('--gopath [path]', "gopath for chaincode", "./chaincode/go");
-
+/*
     program.command('setup').action(dispatch("setup"));
     program.command('register <username>').action(dispatch("register"));
     program.command('enroll <username> <secret>').action(dispatch("enroll"));
-    program.command('execute <function> [args...]').action(dispatch("execute"));
+    program.command('invoke <function> [args...]').action(dispatch("invoke"));
     program.command('query <function> [args...]').action(dispatch("query"));
 
     program.parse(process.argv);
+*/
+    return program;
 }
 
 main();
+
+var express = require('express');
+var bodyParser = require('body-parser');
+var http = require('http');
+var app = express();
+
+var host = process.env.HOST || sdk.getConfigSetting('host');
+var port = process.env.PORT || sdk.getConfigSetting('port');
+
+//support parsing of application/json type post data
+app.use(bodyParser.json());
+//support parsing of application/x-www-form-urlencoded post data
+app.use(bodyParser.urlencoded({
+	extended: false
+}));
+
+var server = http.createServer(app).listen(port, function() {});
+logger.info('****************** SERVER STARTED ************************');
+logger.info('**************  http://' + host + ':' + port +
+	'  ******************');
+server.timeout = 240000;
+
+app.post('/setup', function(req, res) {
+    console.log("setup request");
+    const app = new App(program.user, program.profile, program.storePath, program.channel, program.org, program.caServer, program.orderer, program.peer, program.gopath, program.cryptoSuite);
+    app.setup().then(function(message) {
+	console.log(message);
+	res.send(message);
+    }).catch(err => {
+        console.error('Process exited with error: ', err);
+	var response = {
+	    success: false,
+	    message: err.message
+	};
+	res.json(response);
+    });
+});
+
+app.post('/users', function(req, res) {
+    var username = req.body.username;
+    console.log("register user: ", username);
+    const app = new App(username, program.profile, program.storePath, program.channel, program.org, program.caServer, program.orderer, program.peer, program.gopath, program.cryptoSuite);
+    app.register(username).then(function(secret) {
+	var response = {
+	    success: true,
+	    enrollmentID: username,
+	    secret: secret
+	};
+	console.log(response);
+	res.send(response);
+    }).catch(err => {
+        console.error('error: ', err);
+	var response = {
+	    success: false,
+	    message: err.message
+	};
+	res.json(response);
+    });
+});
+
+app.put('/users', function(req, res) {
+    var username = req.body.username;
+    var secret = req.body.secret;
+    console.log("enroll user: ", username);
+    const app = new App(username, program.profile, program.storePath, program.channel, program.org, program.caServer, program.orderer, program.peer, program.gopath, program.cryptoSuite);
+    app.enroll(username, secret).then(function(message) {
+	var response = {
+	    success: true,
+	    enrollmentID: username,
+	    message: message
+	};
+	console.log(response);
+	res.send(response);
+    }).catch(err => {
+        console.error('error: ', err);
+	var response = {
+	    success: false,
+	    message: err.message
+	};
+	res.json(response);
+    });
+});
+
+app.post('/channels/:channelName/chaincodes/:chaincodeName', function(req, res) {
+    console.log("invoke on chaincode");
+    //var peers = req.body.peers;
+    var chaincodeName = req.params.chaincodeName;
+    var channelName = req.params.channelName;
+    var fcn = req.body.fcn;
+    var args = req.body.args;
+    var username = req.body.username;
+    
+    console.log('channelName  : ' + channelName);
+    console.log('chaincodeName : ' + chaincodeName);
+    console.log('fcn  : ' + fcn);
+    console.log('args  : ' + args);
+    
+    const app = new App(username, program.profile, program.storePath, program.channel, program.org, program.caServer, program.orderer, program.peer, program.gopath, program.cryptoSuite);
+    app.invoke(fcn, args).then(function(response) {
+	console.log(response);
+	res.send(response);
+    }).catch(err => {
+        console.error('error: ', err);
+	var response = {
+	    success: false,
+	    message: err.message
+	};
+	res.json(response);
+    });
+});
+
+app.get('/channels/:channelName/chaincodes/:chaincodeName', function(req, res) {
+    console.log("query by chaincode");
+    var channelName = req.params.channelName;
+    var chaincodeName = req.params.chaincodeName;
+    let args = req.query.args;
+    let fcn = req.query.fcn;
+    let peer = req.query.peer;
+    let username = req.query.username;
+
+    console.log('channelName : ' + channelName);
+    console.log('chaincodeName : ' + chaincodeName);
+    console.log('fcn : ' + fcn);
+    console.log('args : ' + args);
+
+    args = args.replace(/'/g, '"');
+    args = JSON.parse(args);
+    console.log(args);
+
+    const app = new App(username, program.profile, program.storePath, program.channel, program.org, program.caServer, program.orderer, program.peer, program.gopath, program.cryptoSuite);
+    app.query(fcn, args).then(function(response) {
+	console.log(response);
+	res.send(response);
+    }).catch(err => {
+        console.error('error: ', err);
+	var response = {
+	    success: false,
+	    message: err.message
+	};
+	res.json(response);
+    });
+});
+
